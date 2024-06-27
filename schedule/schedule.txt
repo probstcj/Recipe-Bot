@@ -1,0 +1,7 @@
+Monday: Meatloaf
+Tuesday: Chicken_Enchiladas
+Wednesday: Pulled_Pork_Roast
+Thursday: Mississippi_Pot_Roast
+Friday: Taco_Spaghetti
+Saturday: Chicken_Enchiladas
+Sunday: Meatloaf
