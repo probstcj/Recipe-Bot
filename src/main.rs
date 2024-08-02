@@ -4,10 +4,6 @@ use eframe::{egui, CreationContext};
 // Web server imports
 use actix_web::{get, App as ActixApp, HttpServer, HttpResponse, Result, Error};
 
-// Web scraping imports
-use reqwest::blocking::get;
-use scraper::{Html, Selector};
-
 // Thread imports
 use std::thread;
 
@@ -21,16 +17,9 @@ use std::path::PathBuf;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
-struct RecipeDetails {
-    title: String,
-    from: String,
-    servings: String,
-    prep_time: String,
-    cook_time: String,
-    total_time: String,
-    ingreds: Vec<String>,
-    instructions: Vec<String>,
-}
+// Process imports
+use std::process::Command;
+use std::env;
 
 #[derive(Default)]
 pub struct AppState {
@@ -97,16 +86,14 @@ impl MainScreen {
                     self.current_screen = Some(Box::new(CreateWeeklyRecipesScreen::default()));
                 }
 
-                if ui.button("Check/Edit Current Stock").clicked() {
-                    // Handle button click
+                if ui.button("Update and Restart").clicked() {
+                    if let Err(e) = self.update_and_restart() {
+                        eprintln!("Failed to update and restart: {}", e);
+                    }
                 }
 
-                if ui.button("Create New Recipe - Manual").clicked() {
-                    // Handle button click
-                }
-
-                if ui.button("Create New Recipe - From Link").clicked() {
-                    self.current_screen = Some(Box::new(CreateRecipeFromLinkScreen::default()));
+                if ui.button("Create New Recipe - Manual Entry").clicked() {
+                    self.current_screen = Some(Box::new(CreateRecipeManuallyScreen::default()));
                 }
 
                 if ui.button("Light/Dark Mode Toggle").clicked() {
@@ -121,6 +108,28 @@ impl MainScreen {
                 }
             });
         });
+    }
+    fn update_and_restart(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let current_exe = env::current_exe()?;
+
+        // Pull from git
+        Command::new("git")
+            .args(&["pull", "origin", "main"]) // Adjust branch name if necessary
+            .status()?;
+
+        // Recompile the program
+        Command::new("cargo")
+            .args(&["build", "--release"])
+            .status()?;
+
+        // Restart the program
+        Command::new(current_exe)
+            .spawn()?;
+
+        // Exit the current instance
+        std::process::exit(0);
+
+        Ok(())
     }
 }
 
@@ -311,122 +320,37 @@ impl Screen for CreateWeeklyRecipesScreen {
     }
 }
 
-struct CreateRecipeFromLinkScreen{
+struct CreateRecipeManuallyScreen {
     wants_to_exit: bool,
+    title: String,
+    from: String,
+    servings: String,
+    prep_time: String,
+    cook_time: String,
+    total_time: String,
+    ingredients: String,
+    instructions: Vec<String>,
     processing_message: String,
-    url: String,
-    recipe_details: Option<RecipeDetails>,
 }
 
-impl CreateRecipeFromLinkScreen {
-    fn clear_processing_message(&mut self) {
-        self.processing_message.clear();
-    }
-    fn clear_url_string(&mut self) {
-        self.url.clear();
-    }
-    fn scrape_recipe_details(&mut self) -> Result<RecipeDetails, Box<dyn std::error::Error>> {
-        let res = get(&self.url)?;
-        let body = res.text()?;
-        let document = Html::parse_document(&body);
-
-        fn find_text(document: &Html, selector: &str, text: &str) -> Option<String> {
-            let selector = Selector::parse(selector).unwrap();
-            document.select(&selector)
-                .find(|element| element.inner_html().to_lowercase().contains(text))
-                .map(|element| element.inner_html())
-        }
-
-        let title = document.select(&Selector::parse("title").unwrap())
-            .next().map_or("Unknown".to_string(), |el| el.inner_html());
-
-        let from = find_text(&document, "meta[name='author'], .author, .byline", "author")
-            .unwrap_or("Unknown".to_string());
-
-        let servings = find_text(&document, "*", "servings").or_else(|| find_text(&document, "*", "yield"))
-            .unwrap_or("Unknown".to_string());
-
-        let prep_time = find_text(&document, "*", "prep time")
-            .unwrap_or("Unknown".to_string());
-
-        let cook_time = find_text(&document, "*", "cook time")
-            .unwrap_or("Unknown".to_string());
-
-        let total_time = if prep_time != "Unknown" && cook_time != "Unknown" {
-            format!("{} + {}", prep_time, cook_time)
-        } else {
-            "Unknown".to_string()
-        };
-
-        let ingreds = document.select(&Selector::parse("*").unwrap())
-            .skip_while(|element| !element.inner_html().to_lowercase().contains("ingredients"))
-            .skip(1)
-            .take_while(|element| !element.inner_html().to_lowercase().contains("instructions"))
-            .map(|element| element.inner_html().trim().to_string())
-            .collect();
-
-        let instructions = document.select(&Selector::parse("*").unwrap())
-            .skip_while(|element| !element.inner_html().to_lowercase().contains("instructions"))
-            .skip(1)
-            .take_while(|element| !element.inner_html().to_lowercase().contains("end"))
-            .map(|element| element.inner_html().trim().to_string())
-            .collect::<Vec<String>>()
-            .iter().enumerate()
-            .map(|(i, instruction)| if instruction.starts_with(char::is_numeric) {
-                instruction.clone()
-            } else {
-                format!("{}. {}", i + 1, instruction)
-            })
-            .collect();
-
-        Ok(RecipeDetails {
-            title,
-            from,
-            servings,
-            prep_time,
-            cook_time,
-            total_time,
-            ingreds,
-            instructions,
-        })
-    }
-    fn write_recipe_to_file(&self, recipe: &RecipeDetails) -> Result<(), Box<dyn std::error::Error>> {
-        let file_name = format!("{}.rec", recipe.title.replace(" ", "_"));
-        let mut file = File::create(file_name)?;
-
-        writeln!(file, "Title\t{}", recipe.title)?;
-        writeln!(file, "From\t{}", recipe.from)?;
-        writeln!(file, "Servings\t{}", recipe.servings)?;
-        writeln!(file, "Prep Time\t{}", recipe.prep_time)?;
-        writeln!(file, "Cook Time\t{}", recipe.cook_time)?;
-        writeln!(file, "Total Time\t{}", recipe.total_time)?;
-        writeln!(file, "Ingredients Start")?;
-        for ingredient in &recipe.ingreds {
-            writeln!(file, "{}", ingredient)?;
-        }
-        writeln!(file, "Ingredients End")?;
-        writeln!(file, "Instructions Start")?;
-        for instruction in &recipe.instructions {
-            writeln!(file, "{}", instruction)?;
-        }
-        writeln!(file, "Instructions End")?;
-
-        Ok(())
-    }
-}
-
-impl Default for CreateRecipeFromLinkScreen {
+impl Default for CreateRecipeManuallyScreen {
     fn default() -> Self {
-        Self { 
+        Self {
             wants_to_exit: false,
+            title: String::new(),
+            from: String::new(),
+            servings: String::new(),
+            prep_time: String::new(),
+            cook_time: String::new(),
+            total_time: String::new(),
+            ingredients: String::new(),
+            instructions: vec![String::new()],
             processing_message: String::new(),
-            url: String::new(),
-            recipe_details: None,
         }
     }
 }
 
-impl Screen for CreateRecipeFromLinkScreen {
+impl Screen for CreateRecipeManuallyScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
         ctx.set_pixels_per_point(5.0);
 
@@ -439,61 +363,147 @@ impl Screen for CreateRecipeFromLinkScreen {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, background_color);
-            ui.vertical_centered(|ui| {
-                ui.heading("Create Recipe From Link");
+            
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Create Recipe Manually");
 
-                ui.horizontal(|ui|{
-                    ui.add_space(ui.available_width() / 3.5);
-                    ui.label("URL:");
-                    ui.text_edit_singleline(&mut self.url);
-                });
-                ui.add_space(10.0);
-                ui.vertical_centered(|ui|{
-                    if ui.button("Generate").clicked() {
-                        match self.scrape_recipe_details() {
-                            Ok(recipe) => {
-                                self.processing_message = "Recipe scraped successfully.".to_string();
-                                self.write_recipe_to_file(&recipe).unwrap_or_else(|e| {
-                                    self.processing_message = format!("Error writing to file: {}", e);
-                                });
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Title:");
+                        ui.text_edit_singleline(&mut self.title);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("From:");
+                        ui.text_edit_singleline(&mut self.from);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Servings:");
+                        ui.text_edit_singleline(&mut self.servings);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Prep Time:");
+                        ui.text_edit_singleline(&mut self.prep_time);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Cook Time:");
+                        ui.text_edit_singleline(&mut self.cook_time);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Total Time:");
+                        ui.text_edit_singleline(&mut self.total_time);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Ingredients (comma separated):");
+                        ui.text_edit_multiline(&mut self.ingredients);
+                    });
+                    ui.label("Instructions:");
+                    let mut updates = Vec::new();
+                    let mut instruction_to_remove: Option<usize> = None;
+                    let mut instruction_to_add = false;
+
+                    // Render instructions
+                    for (idx, instruction) in self.instructions.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}.", idx + 1));
+                            let mut instruction_text = instruction.clone();
+                            if ui.text_edit_singleline(&mut instruction_text).changed() {
+                                updates.push((idx, instruction_text));
                             }
-                            Err(e) =>{
-                                self.processing_message = format!("Error scraping recipe: {}",e);
+                            if ui.button("-").clicked() && self.instructions.len() > 1 {
+                                instruction_to_remove = Some(idx);
                             }
+                        });
+                    }
+
+                    // Add new instruction button
+                    if ui.button("Add Instruction").clicked() {
+                        instruction_to_add = true;
+                    }
+
+                    // Apply changes
+                    for (idx, instruction_text) in updates {
+                        self.instructions[idx] = instruction_text;
+                    }
+
+                    if let Some(idx) = instruction_to_remove {
+                        self.instructions.remove(idx);
+                    }
+
+                    if instruction_to_add {
+                        self.instructions.push(String::new());
+                    }
+
+                    ui.add_space(10.0);
+
+                    if ui.button("Save Recipe").clicked() {
+                        if let Err(e) = self.save_recipe() {
+                            self.processing_message = format!("Error saving recipe: {}", e);
+                        } else {
+                            self.processing_message = "Recipe saved successfully".to_string();
                         }
                     }
-                });
 
-                ui.vertical_centered(|ui| {
+                    ui.add_space(10.0);
+
                     if ui.button("Back to Main Screen").clicked() {
-                        self.clear_processing_message();
-                        self.clear_url_string();
                         self.wants_to_exit = true;
                     }
-                });
-                ui.add_space(10.0);
-                ui.vertical_centered(|ui|{
+
                     if !self.processing_message.is_empty() {
                         ui.colored_label(
-                            if self.processing_message.starts_with("Error") { egui::Color32::RED } else { egui::Color32::GREEN},
+                            if self.processing_message.starts_with("Error") { egui::Color32::RED } else { egui::Color32::GREEN },
                             &self.processing_message
                         );
                     }
                 });
-
-                // Update text color based on dark mode
-                if is_dark_mode {
-                    ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
-                } else {
-                    ui.visuals_mut().override_text_color = Some(egui::Color32::BLACK);
-                }
             });
+
+            if is_dark_mode {
+                ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
+            } else {
+                ui.visuals_mut().override_text_color = Some(egui::Color32::BLACK);
+            }
         });
 
         None
     }
+
     fn wants_to_exit(&self) -> bool {
         self.wants_to_exit
+    }
+}
+
+impl CreateRecipeManuallyScreen {
+    fn save_recipe(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let file_name = format!("recipes/generated/{}.rec", self.title.replace(" ", "_"));
+        let mut file = File::create(file_name)?;
+
+        writeln!(file, "Title\t{}", self.title)?;
+        writeln!(file, "From\t{}", self.from)?;
+        writeln!(file, "Servings\t{}", self.servings)?;
+        writeln!(file, "Prep Time\t{}", self.prep_time)?;
+        writeln!(file, "Cook Time\t{}", self.cook_time)?;
+        writeln!(file, "Total Time\t{}", self.total_time)?;
+        writeln!(file, "Ingredients Start")?;
+        for ingredient in self.ingredients.split(',') {
+            writeln!(file, "{}", ingredient.trim())?;
+        }
+        writeln!(file, "Ingredients End")?;
+        writeln!(file, "Instructions Start")?;
+        for instruction in &self.instructions {
+            writeln!(file, "{}", instruction)?;
+        }
+        writeln!(file, "Instructions End")?;
+
+        Ok(())
     }
 }
 
@@ -502,16 +512,60 @@ async fn index() -> HttpResponse {
     HttpResponse::Ok().body(
         r#"
         <!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
-            <title>Recipe Bot Server</title>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Recipe Bot Web Server</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background-color: #f0f0f0;
+                    margin: 0;
+                    padding: 0;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                }
+                .container {
+                    text-align: center;
+                    background-color: #ffffff;
+                    padding: 50px;
+                    border-radius: 8px;
+                    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                }
+                h1 {
+                    color: #333333;
+                }
+                .links {
+                    margin-top: 20px;
+                }
+                .link-button {
+                    display: inline-block;
+                    margin: 10px;
+                    padding: 15px 30px;
+                    font-size: 16px;
+                    color: #ffffff;
+                    background-color: #007BFF;
+                    border: none;
+                    border-radius: 5px;
+                    text-decoration: none;
+                    transition: background-color 0.3s;
+                }
+                .link-button:hover {
+                    backgorund-color: #0056B3;
+                }
+            </style>
         </head>
         <body>
-            <h1>Recipe Bot Server</h1>
-            <ul>
-                <li><a href="/schedule">View Schedule</a></li>
-                <li><a href="/ingredients">View Ingredients</a></li>
-            </ul>
+            <div class="container">
+                <h1>Welcome to Recipe Bot's Web Server</h1>
+                <div class="links">
+                    <a href="/schedule" class="link-button">Weekly Food Schedule</a>
+                    <a href="/ingredients" class="link-button">Ingredients Needed</a>
+                </div>
+            </div>
         </body>
         </html>
         "#
@@ -528,23 +582,72 @@ async fn schedule() -> Result<HttpResponse> {
             .map(|line| {
                 let parts: Vec<&str> = line.splitn(2, ": ").collect();
                 if parts.len() == 2 {
-                    format!("<li><b>{}:</b> {}</li>", parts[0], parts[1])
+                    format!("<div class=\"day\"><h2>{}</h2> <p class=\"meal\">{}</p></div>", parts[0], parts[1])
                 } else {
-                    format!("<li>{}</li>",line)
+                    let remaining: String = parts.join(" ");
+                    format!("<h2>{}</h2> <p class=\"meal\">{}</p>", parts[0], remaining)
                 }
             })
-            .collect();
+            .collect::<Vec<String>>()
+            .join("\n");
         Ok(HttpResponse::Ok().body(format!(
             r#"
             <!DOCTYPE html>
-            <html>
+            <html lang="en">
             <head>
-                <title>Recipe Schedule</title>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Meal Schedule</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        background-color: #f0f0f0;
+                        margin: 0;
+                        padding: 0;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                    }}
+                    .container {{
+                        text-align: center;
+                        background-color: #ffffff;
+                        padding: 50px;
+                        border-radius: 8px;
+                        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                        max-width: 600px;
+                        width: 100%;
+                    }}
+                    h1 {{
+                        color: #333333;
+                    }}
+                    .schedule {{
+                        margin-top: 20px;
+                    }}
+                    .day {{
+                        margin: 10px 0;
+                        padding: 15px;
+                        background-color: #e9ecef;
+                        border-radius: 5px;
+                        box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+                    }}
+                    .day h2 {{
+                        margin: 0;
+                        color: #007BFF;
+                    }}
+                    .meal {{
+                        margin-top: 5px;
+                        color: #555555;
+                    }}
+                </style>
             </head>
             <body>
-                <h1>Recipe Schedule</h1>
-                <ul>{}</ul>
-                <a href="/">Back</a>
+                <div class="container">
+                    <h1>Weekly Meal Schedule</h1>
+                    <div class="schedule">
+                        {}
+                    </div>
+                </div>
             </body>
             </html>
             "#,
@@ -563,21 +666,102 @@ async fn ingredients() -> Result<HttpResponse> {
     let path = PathBuf::from("schedule/ingredients.sup");
     if path.exists() {
         let contents = fs::read_to_string(path)?;
+        let list_items: String = contents
+            .lines()
+            .map(|line| format!("<p class=\"item\">{}</p>", line.trim()))
+            .collect::<Vec<String>>()
+            .join("\n");
+
         Ok(HttpResponse::Ok().body(format!(
             r#"
             <!DOCTYPE html>
-            <html>
+            <html lang="en">
             <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>Ingredients</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        background-color: #f0f0f0;
+                        margin: 0;
+                        padding: 0;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                    }}
+                    .container {{
+                        text-align: center;
+                        background-color: #ffffff;
+                        padding: 50px;
+                        border-radius: 8px;
+                        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                        max-width: 600px;
+                        width: 100%;
+                    }}
+                    h1 {{
+                        color: #333333;
+                    }}
+                    .ingredients {{
+                        margin-top: 20px;
+                        text-align: left;
+                        max-height: 400px;
+                        overflow-y: auto;
+                        padding-right: 10px; /* to avoid hiding the last item */
+                    }}
+                    .item {{
+                        margin: 10px 0;
+                        padding: 15px;
+                        background-color: #e9ecef;
+                        border-radius: 5px;
+                        box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+                    }}
+                    .copy-button {{
+                        display: inline-block;
+                        margin-top: 20px;
+                        padding: 15px 30px;
+                        font-size: 16px;
+                        color: #ffffff;
+                        background-color: #28a745;
+                        border: none;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        transition: background-color 0.3s;
+                    }}
+                    .copy-button:hover {{
+                        background-color: #218838;
+                    }}
+                </style>
             </head>
             <body>
-                <h1>Ingredients</h1>
-                <pre>{}</pre>
-                <a href="/">Back</a>
+                <div class="container">
+                    <h1>Ingredients List</h1>
+                    <div class="ingredients" id="ingredients-list">
+                        {}
+                    </div>
+                    <button class="copy-button" onclick="copyToClipboard()">Copy to Clipboard</button>
+                </div>
+                <script>
+                    function copyToClipboard() {{
+                        const ingredientsElement = document.getElementById('ingredients-list');
+                        const ingredientsText = Array.from(ingredientsElement.getElementsByClassName('item'))
+                            .map(item => item.innerText.trim()) // Remove extra whitespace
+                            .join('\n'); // Use actual newline character
+
+                        const container = document.createElement('textarea');
+                        container.value = ingredientsText;
+                        document.body.appendChild(container);
+                        container.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(container);
+                        alert('Ingredients copied to clipboard!');
+                    }}
+                </script>
             </body>
             </html>
             "#,
-            contents
+            list_items
         )))
     } else {
         Err(Error::from(std::io::Error::new(

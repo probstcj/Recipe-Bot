@@ -1,7 +1,7 @@
-Monday: Meatloaf
-Tuesday: Chicken_Enchiladas
-Wednesday: Pulled_Pork_Roast
-Thursday: Mississippi_Pot_Roast
-Friday: Taco_Spaghetti
-Saturday: Chicken_Enchiladas
-Sunday: Meatloaf
+Monday: Grilled_Chicken
+Tuesday: Taco_Spaghetti
+Wednesday: Meatloaf
+Thursday: Baked_Boneless_Pork_Chops
+Friday: Panera_Mac_and_Cheese
+Saturday: Soda_Roast
+Sunday: Chicken_Tetrazzini
