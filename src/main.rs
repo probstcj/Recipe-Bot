@@ -262,7 +262,7 @@ impl MainScreen {
     }
 
     fn update(&mut self, ctx: &egui::Context) {
-        ctx.set_pixels_per_point(3.0);
+        ctx.set_pixels_per_point(2.0);
         let is_dark_mode = self.app_state.is_dark_mode;
         let background_color = if is_dark_mode {
             egui::Color32::from_rgb(30, 30, 30)
@@ -442,7 +442,7 @@ impl Default for CreateWeeklyRecipesScreen {
 
 impl Screen for CreateWeeklyRecipesScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(3.0);
+        ctx.set_pixels_per_point(2.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
@@ -560,7 +560,7 @@ impl Default for CreateRecipeManuallyScreen {
 
 impl Screen for CreateRecipeManuallyScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(3.0);
+        ctx.set_pixels_per_point(2.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
@@ -812,7 +812,7 @@ impl RecipeSelectionScreen {
 
 impl Screen for RecipeSelectionScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(3.0);
+        ctx.set_pixels_per_point(2.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
