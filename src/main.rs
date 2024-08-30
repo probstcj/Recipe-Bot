@@ -115,7 +115,6 @@ fn generate_recipe_pdf(recipe_path: &PathBuf) -> Result<(), Box<dyn std::error::
 
     // Create a new PDF document
     let (doc, page1, layer1) = PdfDocument::new(&recipe.title, Mm(210.0), Mm(297.0), "Layer 1");
-    let current_layer = doc.get_page(page1).get_layer(layer1);
 
     // Use a built-in font
     let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
@@ -197,7 +196,7 @@ fn generate_recipe_pdf(recipe_path: &PathBuf) -> Result<(), Box<dyn std::error::
 
     // Add instructions
     add_text("Instructions:", 16.0, 10.0, &mut state);
-    for (idx, instruction) in recipe.instructions.iter().enumerate() {
+    for (_idx, instruction) in recipe.instructions.iter().enumerate() {
         add_text(&format!("{}", instruction), 12.0, 15.0, &mut state);
     }
 
@@ -262,7 +261,7 @@ impl MainScreen {
     }
 
     fn update(&mut self, ctx: &egui::Context) {
-        ctx.set_pixels_per_point(2.0);
+        ctx.set_pixels_per_point(3.0);
         let is_dark_mode = self.app_state.is_dark_mode;
         let background_color = if is_dark_mode {
             egui::Color32::from_rgb(30, 30, 30)
@@ -334,8 +333,6 @@ impl MainScreen {
 
         // Exit the current instance
         std::process::exit(0);
-
-        Ok(())
     }
 }
 
@@ -442,7 +439,7 @@ impl Default for CreateWeeklyRecipesScreen {
 
 impl Screen for CreateWeeklyRecipesScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(2.0);
+        ctx.set_pixels_per_point(3.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
@@ -560,7 +557,7 @@ impl Default for CreateRecipeManuallyScreen {
 
 impl Screen for CreateRecipeManuallyScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(2.0);
+        ctx.set_pixels_per_point(3.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
@@ -764,6 +761,8 @@ struct RecipeSelectionScreen {
     recipes: Vec<String>,
     wants_to_exit: bool,
     processing_message: String,
+    pdf_generated: bool,
+    current_pdf_path: Option<PathBuf>,
 }
 
 impl Default for RecipeSelectionScreen {
@@ -773,6 +772,8 @@ impl Default for RecipeSelectionScreen {
             recipes: Vec::new(),
             wants_to_exit: false,
             processing_message: String::new(),
+            pdf_generated: false,
+            current_pdf_path: None,
         }
     }
 }
@@ -808,11 +809,36 @@ impl RecipeSelectionScreen {
         }
         PathBuf::new() // Return an empty path if not found
     }
+
+    fn print_pdf(&self, pdf_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            Command::new("cmd")
+                .args(&["/C", "start", "", "/B", pdf_path.to_str().unwrap()])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Command::new("lpr")
+                .arg(pdf_path)
+                .spawn()?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("lpr")
+                .arg(pdf_path)
+                .spawn()?;
+        }
+        Ok(())
+    }
 }
 
 impl Screen for RecipeSelectionScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(2.0);
+        ctx.set_pixels_per_point(3.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
@@ -849,32 +875,6 @@ impl Screen for RecipeSelectionScreen {
                     ui.add_space(10.0);
 
                     if let Some(selected_recipe) = &self.selected_recipe {
-                        if ui.button("View Recipe").clicked() {
-                            let recipe_path = self.get_recipe_path(selected_recipe);
-                            if recipe_path.exists() {
-                                match parse_recipe_file(&recipe_path) {
-                                    Ok(recipe) => {
-                                        self.processing_message = format!("Recipe: {}\n\nFrom: {}\n\nServings: {}\n\nPrep Time: {}\nCook Time: {}\nTotal Time: {}\n\nIngredients:\n{}\n\nInstructions:\n{}\n\nNotes:\n{}",
-                                            recipe.title,
-                                            recipe.from,
-                                            recipe.servings,
-                                            recipe.prep_time,
-                                            recipe.cook_time,
-                                            recipe.total_time,
-                                            recipe.ingreds.join("\n"),
-                                            recipe.instructions.join("\n"),
-                                            recipe.notes.join("\n")
-                                        );
-                                    },
-                                    Err(e) => {
-                                        self.processing_message = format!("Error reading recipe: {}", e);
-                                    }
-                                }
-                            } else {
-                                self.processing_message = "Recipe file not found".to_string();
-                            }
-                        }
-
                         if ui.button("Generate PDF").clicked() {
                             let recipe_path = self.get_recipe_path(selected_recipe);
                             if recipe_path.exists() {
@@ -882,22 +882,40 @@ impl Screen for RecipeSelectionScreen {
                                     Ok(recipe) => {
                                         if let Err(e) = generate_recipe_pdf(&recipe_path) {
                                             self.processing_message = format!("Error generating PDF: {}", e);
+                                            self.pdf_generated = false;
                                         } else {
                                             let pdf_filename = format!("{}.pdf", recipe.title.replace(" ", "_"));
                                             let pdf_path = env::current_dir().unwrap().join(&pdf_filename);
+                                            self.current_pdf_path = Some(pdf_path.clone());
                                             if let Err(e) = open_pdf(&pdf_path) {
                                                 self.processing_message = format!("Error opening PDF: {}", e);
                                             } else {
                                                 self.processing_message = "PDF generated and opened successfully".to_string();
+                                                self.pdf_generated = true;
                                             }
                                         }
                                     },
                                     Err(e) => {
                                         self.processing_message = format!("Error parsing recipe: {}", e);
+                                        self.pdf_generated = false;
                                     }
                                 }
                             } else {
                                 self.processing_message = "Recipe file not found".to_string();
+                                self.pdf_generated = false;
+                            }
+                        }
+
+                        if self.pdf_generated {
+                            if ui.button("Print PDF").clicked() {
+                                if let Some(pdf_path) = &self.current_pdf_path {
+                                    match self.print_pdf(pdf_path) {
+                                        Ok(_) => self.processing_message = "PDF sent to printer successfully".to_string(),
+                                        Err(e) => self.processing_message = format!("Error printing PDF: {}", e),
+                                    }
+                                } else {
+                                    self.processing_message = "No PDF generated to print".to_string();
+                                }
                             }
                         }
                     }
@@ -929,12 +947,6 @@ impl Screen for RecipeSelectionScreen {
     fn wants_to_exit(&self) -> bool {
         self.wants_to_exit
     }
-}
-
-#[derive(Debug, Clone)]
-enum Message {
-    RecipeSelected(PathBuf),
-    GeneratePDF,
 }
 
 #[get("/")]
