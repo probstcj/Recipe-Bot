@@ -9,7 +9,7 @@ use std::thread;
 
 // Standard file imports
 use std::fs::{self, File};
-use std::io::{Write, BufReader, BufRead};
+use std::io::{Write, BufReader, BufRead, BufWriter};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -20,6 +20,9 @@ use rand::thread_rng;
 // Process imports
 use std::process::Command;
 use std::env;
+
+// PDF Generation imports
+use printpdf::*;
 
 #[derive(Default)]
 pub struct AppState {
@@ -34,6 +37,205 @@ impl AppState {
     pub fn toggle_dark_mode(&mut self) {
         self.is_dark_mode = !self.is_dark_mode;
     }
+}
+
+struct Recipe {
+    title: String,
+    from: String,
+    servings: String,
+    prep_time: String,
+    cook_time: String,
+    total_time: String,
+    ingreds: Vec<String>,
+    instructions: Vec<String>,
+    notes: Vec<String>,
+}
+
+fn parse_recipe_file(file_path: &PathBuf) -> Result<Recipe, std::io::Error> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+
+    let mut recipe = Recipe {
+        title: String::new(),
+        from: String::new(),
+        servings: String::new(),
+        prep_time: String::new(),
+        cook_time: String::new(),
+        total_time: String::new(),
+        ingreds: Vec::new(),
+        instructions: Vec::new(),
+        notes: Vec::new(),
+    };
+
+    let mut current_section = "";
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if line.contains('\t') {
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            if parts.len() == 2 {
+                match parts[0].trim() {
+                    "Title" => recipe.title = parts[1].trim().to_string(),
+                    "From" => recipe.from = parts[1].trim().to_string(),
+                    "Servings" => recipe.servings = parts[1].trim().to_string(),
+                    "Prep Time" => recipe.prep_time = parts[1].trim().to_string(),
+                    "Cook Time" => recipe.cook_time = parts[1].trim().to_string(),
+                    "Total Time" => recipe.total_time = parts[1].trim().to_string(),
+                    _ => {}
+                }
+            }
+        } else {
+            match line.trim() {
+                "Ingredients Start" => current_section = "Ingredients",
+                "Ingredients End" => current_section = "",
+                "Instructions Start" => current_section = "Instructions",
+                "Instructions End" => current_section = "",
+                "Notes Start" => current_section = "Notes",
+                "Notes End" => current_section = "",
+                _ => match current_section {
+                    "Ingredients" => recipe.ingreds.push(line.trim().to_string()),
+                    "Instructions" => recipe.instructions.push(line.trim().to_string()),
+                    "Notes" => recipe.notes.push(line.trim().to_string()),
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    Ok(recipe)
+}
+
+fn generate_recipe_pdf(recipe_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Parse the recipe file
+    let recipe = parse_recipe_file(recipe_path)?;
+
+    // Create a new PDF document
+    let (doc, page1, layer1) = PdfDocument::new(&recipe.title, Mm(210.0), Mm(297.0), "Layer 1");
+    let current_layer = doc.get_page(page1).get_layer(layer1);
+
+    // Use a built-in font
+    let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
+
+    // Create a struct to hold the mutable state
+    struct State {
+        y_position: f32,
+        current_page: PdfPageIndex,
+        current_layer: PdfLayerIndex,
+    }
+
+    let mut state = State {
+        y_position: 280.0,
+        current_page: page1,
+        current_layer: layer1,
+    };
+
+    // Function to wrap text
+    fn wrap_text(text: &str, font_size: f32, max_width: f32) -> Vec<String> {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let mut lines = Vec::new();
+        let mut current_line = String::new();
+        let space_width = font_size * 0.3; // Approximate space width
+
+        for word in words {
+            let word_width = word.len() as f32 * font_size * 0.6; // Approximate word width
+            if current_line.is_empty() {
+                current_line = word.to_string();
+            } else if current_line.len() as f32 * font_size * 0.6 + space_width + word_width <= max_width {
+                current_line.push(' ');
+                current_line.push_str(word);
+            } else {
+                lines.push(current_line);
+                current_line = word.to_string();
+            }
+        }
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+        lines
+    }
+
+    // Helper function to add text
+    let add_text = |text: &str, size: f32, x: f32, state: &mut State| {
+        let max_width = 680.0; // Page width minus margins
+        let wrapped_lines = wrap_text(text, size, max_width);
+
+        for line in wrapped_lines {
+            if state.y_position < 20.0 {
+                // Create a new page
+                let (new_page, new_layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
+                state.current_page = new_page;
+                state.current_layer = new_layer;
+                state.y_position = 280.0;
+            }
+            let layer = doc.get_page(state.current_page).get_layer(state.current_layer);
+            layer.use_text(&line, size, Mm(x), Mm(state.y_position), &font);
+            state.y_position -= size as f32 + 2.0; // Move down by font size plus a small gap
+        }
+    };
+
+    // Add recipe details
+    add_text(&recipe.title, 20.0, 10.0, &mut state);
+    add_text(&format!("From: {}", recipe.from), 14.0, 10.0, &mut state);
+    add_text(&format!("Servings: {}", recipe.servings), 14.0, 10.0, &mut state);
+    add_text(&format!("Prep Time: {}", recipe.prep_time), 14.0, 10.0, &mut state);
+    add_text(&format!("Cook Time: {}", recipe.cook_time), 14.0, 10.0, &mut state);
+    add_text(&format!("Total Time: {}", recipe.total_time), 14.0, 10.0, &mut state);
+
+    state.y_position -= 10.0; // Add some space
+
+    // Add ingredients
+    add_text("Ingredients:", 16.0, 10.0, &mut state);
+    for ingredient in &recipe.ingreds {
+        add_text(&format!("• {}", ingredient), 12.0, 15.0, &mut state);
+    }
+
+    state.y_position -= 10.0; // Add some space
+
+    // Add instructions
+    add_text("Instructions:", 16.0, 10.0, &mut state);
+    for (idx, instruction) in recipe.instructions.iter().enumerate() {
+        add_text(&format!("{}", instruction), 12.0, 15.0, &mut state);
+    }
+
+    state.y_position -= 10.0; // Add some space
+
+    // Add notes if any
+    if !recipe.notes.is_empty() {
+        add_text("Notes:", 16.0, 10.0, &mut state);
+        for note in &recipe.notes {
+            add_text(&format!("{}", note), 12.0, 15.0, &mut state);
+        }
+    }
+
+    // Save the PDF to a file
+    let output_filename = format!("{}.pdf", recipe.title.replace(" ", "_"));
+    let output_path = env::current_dir()?.join(&output_filename);
+    let mut output_file = BufWriter::new(File::create(&output_path)?);
+    doc.save(&mut output_file)?;
+
+    println!("PDF saved to: {:?}", output_path);
+
+    Ok(())
+}
+
+fn open_pdf(pdf_path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(&["/C", "start", "", pdf_path.to_str().unwrap()])
+            .spawn()?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("xdg-open")
+            .arg(pdf_path)
+            .spawn()?;
+    }
+    Ok(())
 }
 
 struct MainScreen {
@@ -60,7 +262,7 @@ impl MainScreen {
     }
 
     fn update(&mut self, ctx: &egui::Context) {
-        ctx.set_pixels_per_point(5.0);
+        ctx.set_pixels_per_point(3.0);
         let is_dark_mode = self.app_state.is_dark_mode;
         let background_color = if is_dark_mode {
             egui::Color32::from_rgb(30, 30, 30)
@@ -98,6 +300,10 @@ impl MainScreen {
 
                 if ui.button("Light/Dark Mode Toggle").clicked() {
                     self.handle_dark_mode_toggle();
+                }
+
+                if ui.button("View Recipe").clicked() {
+                    self.current_screen = Some(Box::new(RecipeSelectionScreen::default()));
                 }
 
                 // Update text color based on dark mode
@@ -236,7 +442,7 @@ impl Default for CreateWeeklyRecipesScreen {
 
 impl Screen for CreateWeeklyRecipesScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(5.0);
+        ctx.set_pixels_per_point(3.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
@@ -330,6 +536,7 @@ struct CreateRecipeManuallyScreen {
     total_time: String,
     ingredients: String,
     instructions: Vec<String>,
+    notes: Vec<String>,
     processing_message: String,
 }
 
@@ -345,6 +552,7 @@ impl Default for CreateRecipeManuallyScreen {
             total_time: String::new(),
             ingredients: String::new(),
             instructions: vec![String::new()],
+            notes: vec![String::new()],
             processing_message: String::new(),
         }
     }
@@ -352,7 +560,7 @@ impl Default for CreateRecipeManuallyScreen {
 
 impl Screen for CreateRecipeManuallyScreen {
     fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
-        ctx.set_pixels_per_point(5.0);
+        ctx.set_pixels_per_point(3.0);
 
         let is_dark_mode = app_state.is_dark_mode;
         let background_color = if is_dark_mode {
@@ -443,6 +651,45 @@ impl Screen for CreateRecipeManuallyScreen {
 
                     ui.add_space(10.0);
 
+                    ui.label("Notes:");
+                    let mut note_updates = Vec::new();
+                    let mut note_to_remove: Option<usize> = None;
+                    let mut note_to_add = false;
+
+                    // Render notes
+                    for (idx, note) in self.notes.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}.", idx + 1));
+                            let mut note_text = note.clone();
+                            if ui.text_edit_singleline(&mut note_text).changed() {
+                                note_updates.push((idx, note_text));
+                            }
+                            if ui.button("-").clicked() && self.notes.len() > 1 {
+                                note_to_remove = Some(idx);
+                            }
+                        });
+                    }
+
+                    // Add new note button
+                    if ui.button("Add Note").clicked() {
+                        note_to_add = true;
+                    }
+
+                    // Apply changes to notes
+                    for (idx, note_text) in note_updates {
+                        self.notes[idx] = note_text;
+                    }
+
+                    if let Some(idx) = note_to_remove {
+                        self.notes.remove(idx);
+                    }
+
+                    if note_to_add {
+                        self.notes.push(String::new());
+                    }
+
+                    ui.add_space(10.0);
+
                     if ui.button("Save Recipe").clicked() {
                         if let Err(e) = self.save_recipe() {
                             self.processing_message = format!("Error saving recipe: {}", e);
@@ -502,9 +749,192 @@ impl CreateRecipeManuallyScreen {
             writeln!(file, "{}", instruction)?;
         }
         writeln!(file, "Instructions End")?;
+        writeln!(file, "Notes Start")?;
+        for note in &self.notes {
+            writeln!(file, "{}", note)?;
+        }
+        writeln!(file, "Notes End")?;
 
         Ok(())
     }
+}
+
+struct RecipeSelectionScreen {
+    selected_recipe: Option<String>,
+    recipes: Vec<String>,
+    wants_to_exit: bool,
+    processing_message: String,
+}
+
+impl Default for RecipeSelectionScreen {
+    fn default() -> Self {
+        Self {
+            selected_recipe: None,
+            recipes: Vec::new(),
+            wants_to_exit: false,
+            processing_message: String::new(),
+        }
+    }
+}
+
+impl RecipeSelectionScreen {
+    fn load_recipes(&mut self) {
+        self.recipes.clear();
+        let directories = ["recipes/desert", "recipes/dinner", "recipes/sides"];
+        for dir in &directories {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        let path = entry.path();
+                        if path.is_file() && path.extension().map_or(false, |ext| ext == "rec") {
+                            if let Some(file_name) = path.file_stem() {
+                                self.recipes.push(file_name.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.recipes.sort();
+    }
+
+    fn get_recipe_path(&self, recipe_name: &str) -> PathBuf {
+        let directories = ["recipes/desert", "recipes/dinner", "recipes/sides"];
+        for dir in &directories {
+            let path = Path::new(dir).join(format!("{}.rec", recipe_name));
+            if path.exists() {
+                return path;
+            }
+        }
+        PathBuf::new() // Return an empty path if not found
+    }
+}
+
+impl Screen for RecipeSelectionScreen {
+    fn update(&mut self, ctx: &egui::Context, app_state: &mut AppState) -> Option<Box<dyn Screen>> {
+        ctx.set_pixels_per_point(3.0);
+
+        let is_dark_mode = app_state.is_dark_mode;
+        let background_color = if is_dark_mode {
+            egui::Color32::from_rgb(30, 30, 30)
+        } else {
+            egui::Color32::WHITE
+        };
+
+        if self.recipes.is_empty() {
+            self.load_recipes();
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, background_color);
+            
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Select Recipe to View");
+
+                    ui.add_space(10.0);
+
+                    // Center the combo box
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_label("Recipe")
+                            .width(200.0) // Set a fixed width for the combo box
+                            .selected_text(self.selected_recipe.clone().unwrap_or_else(|| "Select a recipe".to_string()))
+                            .show_ui(ui, |ui| {
+                                for recipe in &self.recipes {
+                                    ui.selectable_value(&mut self.selected_recipe, Some(recipe.clone()), recipe);
+                                }
+                            });
+                    });
+
+                    ui.add_space(10.0);
+
+                    if let Some(selected_recipe) = &self.selected_recipe {
+                        if ui.button("View Recipe").clicked() {
+                            let recipe_path = self.get_recipe_path(selected_recipe);
+                            if recipe_path.exists() {
+                                match parse_recipe_file(&recipe_path) {
+                                    Ok(recipe) => {
+                                        self.processing_message = format!("Recipe: {}\n\nFrom: {}\n\nServings: {}\n\nPrep Time: {}\nCook Time: {}\nTotal Time: {}\n\nIngredients:\n{}\n\nInstructions:\n{}\n\nNotes:\n{}",
+                                            recipe.title,
+                                            recipe.from,
+                                            recipe.servings,
+                                            recipe.prep_time,
+                                            recipe.cook_time,
+                                            recipe.total_time,
+                                            recipe.ingreds.join("\n"),
+                                            recipe.instructions.join("\n"),
+                                            recipe.notes.join("\n")
+                                        );
+                                    },
+                                    Err(e) => {
+                                        self.processing_message = format!("Error reading recipe: {}", e);
+                                    }
+                                }
+                            } else {
+                                self.processing_message = "Recipe file not found".to_string();
+                            }
+                        }
+
+                        if ui.button("Generate PDF").clicked() {
+                            let recipe_path = self.get_recipe_path(selected_recipe);
+                            if recipe_path.exists() {
+                                match parse_recipe_file(&recipe_path) {
+                                    Ok(recipe) => {
+                                        if let Err(e) = generate_recipe_pdf(&recipe_path) {
+                                            self.processing_message = format!("Error generating PDF: {}", e);
+                                        } else {
+                                            let pdf_filename = format!("{}.pdf", recipe.title.replace(" ", "_"));
+                                            let pdf_path = env::current_dir().unwrap().join(&pdf_filename);
+                                            if let Err(e) = open_pdf(&pdf_path) {
+                                                self.processing_message = format!("Error opening PDF: {}", e);
+                                            } else {
+                                                self.processing_message = "PDF generated and opened successfully".to_string();
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        self.processing_message = format!("Error parsing recipe: {}", e);
+                                    }
+                                }
+                            } else {
+                                self.processing_message = "Recipe file not found".to_string();
+                            }
+                        }
+                    }
+
+                    ui.add_space(10.0);
+
+                    if ui.button("Back to Main Screen").clicked() {
+                        self.wants_to_exit = true;
+                    }
+
+                    ui.add_space(10.0);
+
+                    if !self.processing_message.is_empty() {
+                        ui.label(&self.processing_message);
+                    }
+                });
+            });
+
+            if is_dark_mode {
+                ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
+            } else {
+                ui.visuals_mut().override_text_color = Some(egui::Color32::BLACK);
+            }
+        });
+
+        None
+    }
+
+    fn wants_to_exit(&self) -> bool {
+        self.wants_to_exit
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    RecipeSelected(PathBuf),
+    GeneratePDF,
 }
 
 #[get("/")]
