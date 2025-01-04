@@ -742,8 +742,8 @@ impl CreateRecipeManuallyScreen {
         }
         writeln!(file, "Ingredients End")?;
         writeln!(file, "Instructions Start")?;
-        for instruction in &self.instructions {
-            writeln!(file, "{}", instruction)?;
+        for (idx, instruction) in self.instructions.iter().enumerate() { 
+            writeln!(file, "{}. {}", idx + 1, instruction)?;
         }
         writeln!(file, "Instructions End")?;
         writeln!(file, "Notes Start")?;
